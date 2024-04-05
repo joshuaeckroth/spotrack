@@ -1,5 +1,8 @@
 {
     "discord_token": "...",
+    "openai": {
+        "api_key": "..."
+    },
     "spotify": {
         "client_id": "...",
         "client_secret": "..."
