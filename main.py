@@ -7,17 +7,26 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import openai
 import rich
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
 
 console = rich.get_console()
 
 creds = json.load(open('creds.json'))
+
+mongodb_client = MongoClient(creds['mongodb']['url'], server_api=ServerApi('1'))
+try:
+    mongodb_client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+except Exception as e:
+    print(e)
 
 openai_client = openai.OpenAI(api_key=creds['openai']['api_key'])
 
 os.environ['SPOTIPY_CLIENT_ID'] = creds['spotify']['client_id']
 os.environ['SPOTIPY_CLIENT_SECRET'] = creds['spotify']['client_secret']
 
-def ask_openai(sys_prompt, user_prompt):
+def ask_openai(sys_prompt, user_prompt, return_json=False):
     console.print(f"[bold]System prompt:[/bold] {sys_prompt}")
     console.print(f"[bold]User prompt:[/bold] {user_prompt}")
     chat_completion = openai_client.chat.completions.create(
@@ -32,6 +41,7 @@ def ask_openai(sys_prompt, user_prompt):
             }
         ],
         model="gpt-4-turbo-preview",
+        response_format=({"type": "json_object"} if return_json else None)
     )
     response = chat_completion.choices[0].message.content
     console.print(f"[bold]Response:[/bold] {response}")
@@ -95,6 +105,75 @@ def search_spotify(user_prompt):
     console.print("[bold]Explanation:[/bold] " + explanation)
     return explanation
 
+sys_prompt_recognize_action = """
+You are a bot that recognizes the action a user wants to take based on their prompt in Discord.
+
+There are three possible actions a user can take: recommend a track to a user, get recommendations that have been, or search spotify for information.
+
+Return JSON. Example formats are given below.
+
+Examples of user prompts and responses:
+
+---
+
+From: joe
+User prompt: I recommend Get Back by The Beatles for @jane because you love quick songs
+Response: {"action": "recommend", "track": "Get Back", "artist": "The Beatles", "recipient": "jane", "reason": "you love quick songs", "recommender": "joe"}
+
+---
+
+From: joe
+User prompt: rec Get Back (Beatles) 4 @jane because she loves quick songs
+Response: {"action": "recommend", "track": "Get Back", "artist": "The Beatles", "recipient": "jane", "reason": "she loves quick songs", "recommender": "joe"}
+
+---
+
+From: jane
+User prompt: what did @joe recommend to me?
+Response: {"action": "get_recommendations", "recipient": "jane", "recommender": "joe"}
+
+---
+
+From: jane
+User prompt: rec @joe for me
+Response: {"action": "get_recommendations", "recipient": "jane", "recommender": "joe"}
+
+---
+
+From: jane
+User prompt: my recs
+Response: {"action": "get_recommendations", "recipient": "jane"}
+
+---
+
+From: jane
+User prompt: rec @joe @jane
+Response: {"action": "get_recommendations", "recipient": "jane", "recommender": "joe"}
+
+---
+
+From: jane
+User prompt: what did I recommend?
+Response: {"action": "get_recommendations", "recommender": "jane"}
+
+---
+
+From: jane
+User prompt: who recommended Get Back?
+Response: {"action": "get_recommendations", "track": "Get Back"}
+
+---
+
+From: bob
+User prompt: Name some albums by The Beatles
+Response: {"action": "search_spotify", "query": "album: The Beatles"}
+"""
+
+def recognize_action(from_user, user_prompt):
+    action = ask_openai(sys_prompt_recognize_action, f"From: {from_user}\nUser prompt: {user_prompt}",
+                        True)
+    return action
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -108,9 +187,10 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user:
         return
-
-    if message.content.startswith('$spotify '):
-        await message.channel.send(search_spotify(message.content[9:]))
+    if message.content.startswith('/sp '):
+        #await message.channel.send(search_spotify(message.content[4:]))
+        action = recognize_action(message.author.name, message.content[4:])
+        await message.channel.send(action)
 
 client.run(creds['discord_token'])
 

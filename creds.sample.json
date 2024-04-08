@@ -6,5 +6,8 @@
     "spotify": {
         "client_id": "...",
         "client_secret": "..."
+    },
+    "mongodb": {
+        "url": "..."
     }
 }
