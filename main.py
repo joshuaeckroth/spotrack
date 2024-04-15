@@ -87,23 +87,37 @@ Add suggestions for follow up searches.
 
 def search_spotify(user_prompt):
     search_string = ask_openai(sys_prompt_search, user_prompt)
-    spotify_results = spotify.search(search_string, limit=20)
+    spotify_results = spotify.search(search_string, limit=5)
     console.rule("Spotify results")
     console.print(spotify_results)
     attempts = [search_string]
     while len(spotify_results['tracks']['items']) == 0 and len(attempts) < 4:
         search_string = ask_openai(sys_prompt_search, "These prior attempts failed to produce results, modify them to find the right results:\n\n"+"\n".join(attempts) + "\n\nUser query: " + user_prompt)
-        spotify_results = spotify.search(search_string, limit=20)
+        spotify_results = spotify.search(search_string, limit=5)
         console.rule("Spotify results")
         console.print(spotify_results)
         attempts.append(search_string)
-    if len(spotify_results['tracks']['items']) == 0:
-        return "I'm sorry, I couldn't find any results for your query."
-    explanation = ask_openai(sys_prompt_response,
-                             "Spotify results:\n\n"+json.dumps(spotify_results) + "\n\n" + \
-                             "User query:\n\n" + user_prompt)
-    console.print("[bold]Explanation:[/bold] " + explanation)
-    return explanation
+    tracks = []
+    for t in spotify_results['tracks']['items']:
+        track = {
+            "name": t['name'],
+            "artist": t['artists'][0]['name'],
+            "album": t['album']['name'],
+            "release_date": t['album']['release_date'],
+            "popularity": t['popularity'],
+            "preview_url": t['preview_url'],
+            "spotify_url": t['external_urls']['spotify']
+        }
+        tracks.append(track)
+    return tracks
+        
+    #if len(spotify_results['tracks']['items']) == 0:
+    #    return "I'm sorry, I couldn't find any results for your query."
+    #explanation = ask_openai(sys_prompt_response,
+    #                         "Spotify results:\n\n"+json.dumps(spotify_results) + "\n\n" + \
+    #                         "User query:\n\n" + user_prompt)
+    #console.print("[bold]Explanation:[/bold] " + explanation)
+    #return explanation
 
 sys_prompt_recognize_action = """
 You are a bot that recognizes the action a user wants to take based on their prompt in Discord.
@@ -172,7 +186,40 @@ Response: {"action": "search_spotify", "query": "album: The Beatles"}
 def recognize_action(from_user, user_prompt):
     action = ask_openai(sys_prompt_recognize_action, f"From: {from_user}\nUser prompt: {user_prompt}",
                         True)
-    return action
+    return json.loads(action)
+
+def save_recommendation(action):
+    if 'recommender' not in action or 'recipient' not in action:
+        return False
+    if 'track' not in action and 'artist' not in action:
+        return False
+    if 'track' in action and 'artist' not in action:
+        spotify_tracks = search_spotify(f"track: '{action['track']}'")
+    elif 'track' not in action and 'artist' in action:
+        spotify_tracks = search_spotify(f"artist: '{action['artist']}'")
+    else:
+        spotify_tracks = search_spotify(f"track: '{action['track']}' artist: '{action['artist']}'")
+    recommendation = {
+        "recommender": action['recommender'],
+        "recipient": action['recipient'],
+        "track": action['track'] if 'track' in action else None,
+        "artist": action['artist'] if 'artist' in action else None,
+        "reason": action['reason'] if 'reason' in action else None,
+        "spotify": spotify_tracks
+    }
+    mongodb_client.spotrack.recommendations.insert_one(recommendation)
+    return True
+
+def get_recommendations(action):
+    if 'recommender' in action and 'recipient' in action:
+        recommendations = list(mongodb_client.spotrack.recommendations.find({"recommender": action['recommender'], "recipient": action['recipient']}))
+    elif 'recommender' in action:
+        recommendations = list(mongodb_client.spotrack.recommendations.find({"recommender": action['recommender']}))
+    elif 'recipient' in action:
+        recommendations = list(mongodb_client.spotrack.recommendations.find({"recipient": action['recipient']}))
+    else:
+        recommendations = []
+    return recommendations
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -190,7 +237,21 @@ async def on_message(message):
     if message.content.startswith('/sp '):
         #await message.channel.send(search_spotify(message.content[4:]))
         action = recognize_action(message.author.name, message.content[4:])
-        await message.channel.send(action)
+        if action['action'] == 'recommend':
+            result = save_recommendation(action)
+            if result:
+                await message.channel.send("I saved your recommendation.")
+            else:
+                await message.channel.send("I'm sorry, I couldn't save your recommendation.")
+        elif action['action'] == 'get_recommendations':
+            recommendations = get_recommendations(action)
+            if len(recommendations) == 0:
+                await message.channel.send("I'm sorry, I couldn't find any recommendations.")
+            else:
+                for recommendation in recommendations:
+                    await message.channel.send(recommendation)
+        else:
+            await message.channel.send(action)
 
 client.run(creds['discord_token'])
 
